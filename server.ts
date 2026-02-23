@@ -25,6 +25,8 @@ db.exec(`
     contact TEXT,
     description TEXT,
     image_url TEXT,
+    lat REAL,
+    lng REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )
 `);
@@ -69,7 +71,7 @@ async function startServer() {
   });
 
   app.post("/api/events", (req, res) => {
-    const { name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url } = req.body;
+    const { name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url, lat, lng } = req.body;
     
     if (!name || !type || !district || !upazila || !village || !address) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -77,10 +79,10 @@ async function startServer() {
 
     try {
       const stmt = db.prepare(`
-        INSERT INTO events (name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO events (name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url, lat, lng)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      const result = stmt.run(name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url);
+      const result = stmt.run(name, type, district, upazila, village, address, date_range, start_time, iftar_time, contact, description, image_url, lat, lng);
       res.json({ id: result.lastInsertRowid });
     } catch (error) {
       res.status(500).json({ error: "Failed to add event" });

@@ -1,6 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen } from 'lucide-react';
+import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen, Map as MapIcon, List, Navigation } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Fix for default marker icons in Leaflet
+const DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41]
+});
+
+L.Marker.prototype.options.icon = DefaultIcon;
 
 interface Event {
   id: number;
@@ -16,6 +29,8 @@ interface Event {
   contact: string;
   description: string;
   image_url: string;
+  lat?: number;
+  lng?: number;
 }
 
 const DISTRICTS = ["ঢাকা", "চট্টগ্রাম", "রাজশাহী", "খুলনা", "বরিশাল", "সিলেট", "রংপুর", "ময়মনসিংহ", "বগুড়া", "কুমিল্লা"];
@@ -28,6 +43,7 @@ export default function App() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
   
   // Search filters
   const [filters, setFilters] = useState({
@@ -50,8 +66,25 @@ export default function App() {
     iftar_time: "",
     contact: "",
     description: "",
-    image_url: ""
+    image_url: "",
+    lat: undefined as number | undefined,
+    lng: undefined as number | undefined
   });
+
+  const getCurrentLocation = () => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((position) => {
+        setFormData({
+          ...formData,
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        });
+      }, (error) => {
+        console.error("Error getting location", error);
+        alert("লোকেশন পাওয়া যায়নি। অনুগ্রহ করে ম্যানুয়ালি দিন।");
+      });
+    }
+  };
 
   const fetchEvents = async () => {
     setLoading(true);
@@ -84,7 +117,7 @@ export default function App() {
         setFormData({
           name: "", type: "public_iftar", district: "", upazila: "", village: "",
           address: "", date_range: "", start_time: "", iftar_time: "",
-          contact: "", description: "", image_url: ""
+          contact: "", description: "", image_url: "", lat: undefined, lng: undefined
         });
         fetchEvents();
       }
@@ -92,6 +125,39 @@ export default function App() {
       console.error("Failed to add event", error);
     }
   };
+
+  // Map Component to handle view changes
+  function MapView({ events }: { events: Event[] }) {
+    const map = useMap();
+    useEffect(() => {
+      if (events.length > 0 && events[0].lat && events[0].lng) {
+        map.setView([events[0].lat, events[0].lng], 13);
+      }
+    }, [events, map]);
+
+    return (
+      <>
+        {events.filter(e => e.lat && e.lng).map(event => (
+          <Marker key={event.id} position={[event.lat!, event.lng!]}>
+            <Popup>
+              <div className="p-1">
+                <h5 className="font-bold text-emerald-800">{event.name}</h5>
+                <p className="text-xs text-slate-600 mb-2">{event.address}</p>
+                <div className="flex gap-2">
+                  <a 
+                    href={`tel:${event.contact}`}
+                    className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded-md"
+                  >
+                    কল দিন
+                  </a>
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#FDFCF8] text-slate-900 font-sans">
@@ -185,27 +251,45 @@ export default function App() {
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-4 py-12">
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
           <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
             <Calendar className="text-emerald-600" />
             সাম্প্রতিক ইভেন্টসমূহ
           </h3>
-          <div className="flex gap-2">
-            <button 
-              onClick={() => setFilters({...filters, type: ""})}
-              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === "" ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
-            >
-              সব
-            </button>
-            {EVENT_TYPES.map(type => (
+          <div className="flex items-center gap-4">
+            <div className="bg-white border border-slate-200 p-1 rounded-xl flex">
               <button 
-                key={type.id}
-                onClick={() => setFilters({...filters, type: type.id})}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === type.id ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+                onClick={() => setViewMode('list')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'list' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
               >
-                {type.label}
+                <List size={16} />
+                লিস্ট
               </button>
-            ))}
+              <button 
+                onClick={() => setViewMode('map')}
+                className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'map' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+              >
+                <MapIcon size={16} />
+                ম্যাপ
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setFilters({...filters, type: ""})}
+                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === "" ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+              >
+                সব
+              </button>
+              {EVENT_TYPES.map(type => (
+                <button 
+                  key={type.id}
+                  onClick={() => setFilters({...filters, type: type.id})}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === type.id ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -215,81 +299,93 @@ export default function App() {
               <div key={i} className="h-64 bg-slate-100 rounded-3xl animate-pulse"></div>
             ))}
           </div>
-        ) : events.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {events.map((event) => {
-              const typeInfo = EVENT_TYPES.find(t => t.id === event.type) || EVENT_TYPES[0];
-              return (
-                <motion.div 
-                  layout
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  key={event.id}
-                  className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all overflow-hidden group"
-                >
-                  <div className="p-6">
-                    <div className="flex justify-between items-start mb-4">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${typeInfo.bg} ${typeInfo.color}`}>
-                        {typeInfo.label}
-                      </span>
-                      <div className="text-slate-400 group-hover:text-emerald-600 transition-colors">
-                        <Info size={20} />
-                      </div>
-                    </div>
-                    
-                    <h4 className="text-xl font-bold mb-2 text-slate-900 group-hover:text-emerald-700 transition-colors">
-                      {event.name}
-                    </h4>
-                    
-                    <div className="space-y-2 mb-6">
-                      <div className="flex items-center gap-2 text-slate-500 text-sm">
-                        <MapPin size={16} className="text-emerald-500" />
-                        <span>{event.district} {event.upazila ? `> ${event.upazila}` : ''} {event.village ? `> ${event.village}` : ''}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-500 text-sm">
-                        <Clock size={16} className="text-emerald-500" />
-                        <span>{event.start_time || 'আসরের পর'} থেকে ইফতার পর্যন্ত</span>
-                      </div>
-                      {event.contact && (
-                        <div className="flex items-center gap-2 text-slate-500 text-sm">
-                          <Phone size={16} className="text-emerald-500" />
-                          <span>{event.contact}</span>
+        ) : viewMode === 'list' ? (
+          events.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {events.map((event) => {
+                const typeInfo = EVENT_TYPES.find(t => t.id === event.type) || EVENT_TYPES[0];
+                return (
+                  <motion.div 
+                    layout
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    key={event.id}
+                    className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all overflow-hidden group"
+                  >
+                    <div className="p-6">
+                      <div className="flex justify-between items-start mb-4">
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${typeInfo.bg} ${typeInfo.color}`}>
+                          {typeInfo.label}
+                        </span>
+                        <div className="text-slate-400 group-hover:text-emerald-600 transition-colors">
+                          <Info size={20} />
                         </div>
-                      )}
-                    </div>
+                      </div>
+                      
+                      <h4 className="text-xl font-bold mb-2 text-slate-900 group-hover:text-emerald-700 transition-colors">
+                        {event.name}
+                      </h4>
+                      
+                      <div className="space-y-2 mb-6">
+                        <div className="flex items-center gap-2 text-slate-500 text-sm">
+                          <MapPin size={16} className="text-emerald-500" />
+                          <span>{event.district} {event.upazila ? `> ${event.upazila}` : ''} {event.village ? `> ${event.village}` : ''}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-slate-500 text-sm">
+                          <Clock size={16} className="text-emerald-500" />
+                          <span>{event.start_time || 'আসরের পর'} থেকে ইফতার পর্যন্ত</span>
+                        </div>
+                        {event.contact && (
+                          <div className="flex items-center gap-2 text-slate-500 text-sm">
+                            <Phone size={16} className="text-emerald-500" />
+                            <span>{event.contact}</span>
+                          </div>
+                        )}
+                      </div>
 
-                    <div className="flex gap-3">
-                      <a 
-                        href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${event.name} ${event.address} ${event.village}`)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
-                      >
-                        <MapPin size={16} />
-                        লোকেশন দেখুন
-                      </a>
-                      {event.contact && (
+                      <div className="flex gap-3">
                         <a 
-                          href={`tel:${event.contact}`}
-                          className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
+                          href={event.lat && event.lng ? `https://www.google.com/maps/search/?api=1&query=${event.lat},${event.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${event.name} ${event.address} ${event.village}`)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
                         >
-                          <Phone size={16} />
-                          কল দিন
+                          <MapPin size={16} />
+                          লোকেশন দেখুন
                         </a>
-                      )}
+                        {event.contact && (
+                          <a 
+                            href={`tel:${event.contact}`}
+                            className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
+                          >
+                            <Phone size={16} />
+                            কল দিন
+                          </a>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
-            <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
-              <Search size={32} />
+                  </motion.div>
+                );
+              })}
             </div>
-            <h4 className="text-xl font-bold text-slate-800 mb-2">কোনো ইভেন্ট পাওয়া যায়নি</h4>
-            <p className="text-slate-500">আপনার এলাকায় কোনো ইভেন্ট থাকলে যুক্ত করুন।</p>
+          ) : (
+            <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
+              <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
+                <Search size={32} />
+              </div>
+              <h4 className="text-xl font-bold text-slate-800 mb-2">কোনো ইভেন্ট পাওয়া যায়নি</h4>
+              <p className="text-slate-500">আপনার এলাকায় কোনো ইভেন্ট থাকলে যুক্ত করুন।</p>
+            </div>
+          )
+        ) : (
+          <div className="h-[600px] w-full bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden relative">
+            <MapContainer center={[23.685, 90.3563]} zoom={7} style={{ height: '100%', width: '100%' }}>
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <MapView events={events} />
+            </MapContainer>
           </div>
         )}
       </main>
@@ -415,6 +511,41 @@ export default function App() {
                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
                       value={formData.contact}
                       onChange={(e) => setFormData({...formData, contact: e.target.value})}
+                    />
+                  </div>
+                </div>
+
+                <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-xs font-bold text-emerald-800 uppercase flex items-center gap-1">
+                      <Navigation size={14} />
+                      ম্যাপ লোকেশন (ঐচ্ছিক)
+                    </label>
+                    <button 
+                      type="button"
+                      onClick={getCurrentLocation}
+                      className="text-[10px] bg-emerald-600 text-white px-2 py-1 rounded-md font-bold flex items-center gap-1"
+                    >
+                      <MapPin size={10} />
+                      বর্তমান লোকেশন নিন
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input 
+                      type="number"
+                      step="any"
+                      placeholder="অক্ষাংশ (Lat)"
+                      className="w-full p-2 bg-white border border-emerald-200 rounded-lg text-xs outline-none"
+                      value={formData.lat || ''}
+                      onChange={(e) => setFormData({...formData, lat: parseFloat(e.target.value)})}
+                    />
+                    <input 
+                      type="number"
+                      step="any"
+                      placeholder="দ্রাঘিমাংশ (Lng)"
+                      className="w-full p-2 bg-white border border-emerald-200 rounded-lg text-xs outline-none"
+                      value={formData.lng || ''}
+                      onChange={(e) => setFormData({...formData, lng: parseFloat(e.target.value)})}
                     />
                   </div>
                 </div>
