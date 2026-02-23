@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen, Map as MapIcon, List, Navigation, ExternalLink } from 'lucide-react';
+import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen, Map as MapIcon, List, Navigation, ExternalLink, Share2, Copy, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -50,6 +50,29 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleShare = async (event: Event) => {
+    const shareData = {
+      title: event.name,
+      text: `${event.name}\nতারিখ: ${event.event_date || event.date_range}\nস্থান: ${event.address}, ${event.village}\nযোগাযোগ: ${event.contact}\n\nবিস্তারিত দেখুন ইফতার সন্ধানে অ্যাপে।`,
+      url: window.location.href
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        console.error('Error sharing:', err);
+      }
+    } else {
+      // Fallback: Copy to clipboard
+      const shareText = `${shareData.title}\n${shareData.text}\n${shareData.url}`;
+      navigator.clipboard.writeText(shareText);
+      setCopiedId(event.id.toString());
+      setTimeout(() => setCopiedId(null), 2000);
+    }
+  };
   
   // Search filters
   const [filters, setFilters] = useState({
@@ -421,17 +444,15 @@ export default function App() {
                                 className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
                               >
                                 <MapPin size={16} />
-                                লোকেশন দেখুন
+                                লোকেশন
                               </a>
-                              {event.contact && (
-                                <a 
-                                  href={`tel:${event.contact}`}
-                                  className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
-                                >
-                                  <Phone size={16} />
-                                  কল দিন
-                                </a>
-                              )}
+                              <button 
+                                onClick={() => handleShare(event)}
+                                className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
+                              >
+                                {copiedId === event.id.toString() ? <Check size={16} /> : <Share2 size={16} />}
+                                {copiedId === event.id.toString() ? 'কপি হয়েছে' : 'শেয়ার'}
+                              </button>
                             </div>
                           </div>
                         </motion.div>
@@ -459,6 +480,33 @@ export default function App() {
                 </div>
               )}
             </main>
+
+            {/* Global Share Section */}
+            <section className="max-w-5xl mx-auto px-4 mb-20">
+              <div className="bg-gradient-to-r from-emerald-600 to-emerald-800 rounded-[40px] p-8 md:p-12 text-white flex flex-col md:flex-row items-center justify-between gap-8 shadow-2xl shadow-emerald-200">
+                <div className="text-center md:text-left">
+                  <h3 className="text-2xl md:text-3xl font-bold mb-2">অন্যদের সাথে শেয়ার করুন</h3>
+                  <p className="text-emerald-100/80">সদকায়ে জারিয়া হিসেবে এই অ্যাপটি আপনার বন্ধু ও পরিবারের সাথে শেয়ার করুন।</p>
+                </div>
+                <div className="flex gap-4">
+                  <button 
+                    onClick={() => {
+                      const text = "ইফতার সন্ধানে - আপনার এলাকার ইফতার মাহফিল ও দ্বীনি মজলিসের তথ্য খুঁজে নিন।\n" + window.location.href;
+                      if (navigator.share) {
+                        navigator.share({ title: 'ইফতার সন্ধানে', text, url: window.location.href });
+                      } else {
+                        navigator.clipboard.writeText(text);
+                        alert("লিংক কপি করা হয়েছে!");
+                      }
+                    }}
+                    className="bg-white text-emerald-700 px-8 py-4 rounded-2xl font-bold flex items-center gap-3 hover:bg-emerald-50 transition-all shadow-lg active:scale-95"
+                  >
+                    <Share2 size={20} />
+                    অ্যাপ শেয়ার করুন
+                  </button>
+                </div>
+              </div>
+            </section>
           </motion.div>
         )}
 
