@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen, Map as MapIcon, List, Navigation } from 'lucide-react';
+import { Search, MapPin, Clock, Phone, Plus, X, Filter, Calendar, Info, Utensils, BookOpen, Map as MapIcon, List, Navigation, ExternalLink } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import { db } from './firebase';
+import { collection, addDoc, query, getDocs, where, orderBy, onSnapshot } from 'firebase/firestore';
 
 // Fix for default marker icons in Leaflet
 const DefaultIcon = L.icon({
@@ -31,6 +33,9 @@ interface Event {
   image_url: string;
   lat?: number;
   lng?: number;
+  link_url?: string;
+  event_date?: string;
+  event_day?: string;
 }
 
 const DISTRICTS = ["ঢাকা", "চট্টগ্রাম", "রাজশাহী", "খুলনা", "বরিশাল", "সিলেট", "রংপুর", "ময়মনসিংহ", "বগুড়া", "কুমিল্লা"];
@@ -40,6 +45,7 @@ const EVENT_TYPES = [
 ];
 
 export default function App() {
+  const [currentPage, setCurrentPage] = useState<'iftar' | 'about' | 'products' | 'services' | 'contact'>('iftar');
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -68,7 +74,10 @@ export default function App() {
     description: "",
     image_url: "",
     lat: undefined as number | undefined,
-    lng: undefined as number | undefined
+    lng: undefined as number | undefined,
+    link_url: "",
+    event_date: "",
+    event_day: ""
   });
 
   const getCurrentLocation = () => {
@@ -86,43 +95,72 @@ export default function App() {
     }
   };
 
-  const fetchEvents = async () => {
+  const fetchEvents = () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams(filters);
-      const res = await fetch(`/api/events?${params.toString()}`);
-      const data = await res.json();
-      setEvents(data);
+      const eventsRef = collection(db, 'events');
+      let q = query(eventsRef, orderBy('created_at', 'desc'));
+
+      if (filters.district) {
+        q = query(q, where('district', '==', filters.district));
+      }
+      if (filters.type) {
+        q = query(q, where('type', '==', filters.type));
+      }
+
+      // Real-time listener
+      const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const eventsData: Event[] = [];
+        querySnapshot.forEach((doc) => {
+          const data = doc.data();
+          // Client-side filtering for fields that Firestore doesn't support well with multiple inequalities/contains
+          let matches = true;
+          if (filters.upazila && !data.upazila?.toLowerCase().includes(filters.upazila.toLowerCase())) matches = false;
+          if (filters.village && !data.village?.toLowerCase().includes(filters.village.toLowerCase())) matches = false;
+          
+          if (matches) {
+            eventsData.push({ id: doc.id as any, ...data } as Event);
+          }
+        });
+        setEvents(eventsData);
+        setLoading(false);
+      }, (error) => {
+        console.error("Error fetching events: ", error);
+        setLoading(false);
+      });
+
+      return unsubscribe;
     } catch (error) {
-      console.error("Failed to fetch events", error);
-    } finally {
+      console.error("Failed to setup events listener", error);
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchEvents();
+    const unsubscribe = fetchEvents();
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, [filters]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch("/api/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData)
+      await addDoc(collection(db, 'events'), {
+        ...formData,
+        created_at: new Date().toISOString()
       });
-      if (res.ok) {
-        setShowAddForm(false);
-        setFormData({
-          name: "", type: "public_iftar", district: "", upazila: "", village: "",
-          address: "", date_range: "", start_time: "", iftar_time: "",
-          contact: "", description: "", image_url: "", lat: undefined, lng: undefined
-        });
-        fetchEvents();
-      }
+      
+      setShowAddForm(false);
+      setFormData({
+        name: "", type: "public_iftar", district: "", upazila: "", village: "",
+        address: "", date_range: "", start_time: "", iftar_time: "",
+        contact: "", description: "", image_url: "", lat: undefined, lng: undefined,
+        link_url: "", event_date: "", event_day: ""
+      });
     } catch (error) {
-      console.error("Failed to add event", error);
+      console.error("Failed to add event to Firebase", error);
+      alert("ইভেন্ট যুক্ত করতে সমস্যা হয়েছে।");
     }
   };
 
@@ -164,7 +202,7 @@ export default function App() {
       {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-4 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setCurrentPage('iftar')}>
             <div className="w-10 h-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-200">
               <Utensils size={24} />
             </div>
@@ -173,6 +211,15 @@ export default function App() {
               <p className="text-[10px] uppercase tracking-widest font-semibold text-emerald-600/70">Iftar Shondhane</p>
             </div>
           </div>
+          
+          <nav className="hidden md:flex items-center gap-6">
+            <button onClick={() => setCurrentPage('iftar')} className={`text-sm font-bold transition-colors ${currentPage === 'iftar' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}>হোম</button>
+            <button onClick={() => setCurrentPage('about')} className={`text-sm font-bold transition-colors ${currentPage === 'about' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}>আমাদের সম্পর্কে</button>
+            <button onClick={() => setCurrentPage('products')} className={`text-sm font-bold transition-colors ${currentPage === 'products' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}>প্রোডাক্টস</button>
+            <button onClick={() => setCurrentPage('services')} className={`text-sm font-bold transition-colors ${currentPage === 'services' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}>সার্ভিস</button>
+            <button onClick={() => setCurrentPage('contact')} className={`text-sm font-bold transition-colors ${currentPage === 'contact' ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}>যোগাযোগ</button>
+          </nav>
+
           <button 
             onClick={() => setShowAddForm(true)}
             className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-md active:scale-95"
@@ -183,212 +230,415 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hero & Search */}
-      <section className="bg-emerald-900 text-white py-12 px-4 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-10">
-          <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-emerald-400 via-transparent to-transparent"></div>
-        </div>
-        
-        <div className="max-w-4xl mx-auto relative z-10 text-center">
-          <motion.h2 
-            initial={{ opacity: 0, y: 20 }}
+      <AnimatePresence mode="wait">
+        {currentPage === 'iftar' && (
+          <motion.div
+            key="iftar"
+            initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-3xl md:text-4xl font-bold mb-4"
+            exit={{ opacity: 0, y: -10 }}
           >
-            আপনার এলাকায় ইফতার ও দ্বীনি মজলিসের খোঁজ নিন
-          </motion.h2>
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-emerald-100/80 mb-8 max-w-2xl mx-auto"
-          >
-            রমজানে ইফতার মাহফিল বা ইফতারি বিতরণের তথ্য এক জায়গায়। জেলা, ইউনিয়ন এবং গ্রাম ভিত্তিক সার্চ করুন।
-          </motion.p>
-
-          {/* Search Bar */}
-          <div className="bg-white p-2 rounded-2xl shadow-2xl flex flex-col md:flex-row gap-2">
-            <div className="flex-1 flex items-center px-3 border-b md:border-b-0 md:border-r border-slate-100">
-              <MapPin size={20} className="text-slate-400 mr-2" />
-              <select 
-                value={filters.district}
-                onChange={(e) => setFilters({...filters, district: e.target.value})}
-                className="w-full py-3 bg-transparent text-slate-700 focus:outline-none appearance-none cursor-pointer"
-              >
-                <option value="">জেলা নির্বাচন করুন</option>
-                {DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
-            </div>
-            <div className="flex-1 flex items-center px-3 border-b md:border-b-0 md:border-r border-slate-100">
-              <Filter size={20} className="text-slate-400 mr-2" />
-              <input 
-                type="text"
-                placeholder="উপজেলা/ইউনিয়ন"
-                value={filters.upazila}
-                onChange={(e) => setFilters({...filters, upazila: e.target.value})}
-                className="w-full py-3 bg-transparent text-slate-700 focus:outline-none"
-              />
-            </div>
-            <div className="flex-1 flex items-center px-3">
-              <Search size={20} className="text-slate-400 mr-2" />
-              <input 
-                type="text"
-                placeholder="গ্রাম/মহল্লা"
-                value={filters.village}
-                onChange={(e) => setFilters({...filters, village: e.target.value})}
-                className="w-full py-3 bg-transparent text-slate-700 focus:outline-none"
-              />
-            </div>
-            <button 
-              onClick={fetchEvents}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-xl font-bold transition-all"
-            >
-              খুঁজুন
-            </button>
-          </div>
-        </div>
-      </section>
-
-      {/* Main Content */}
-      <main className="max-w-5xl mx-auto px-4 py-12">
-        <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-          <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-            <Calendar className="text-emerald-600" />
-            সাম্প্রতিক ইভেন্টসমূহ
-          </h3>
-          <div className="flex items-center gap-4">
-            <div className="bg-white border border-slate-200 p-1 rounded-xl flex">
-              <button 
-                onClick={() => setViewMode('list')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'list' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
-              >
-                <List size={16} />
-                লিস্ট
-              </button>
-              <button 
-                onClick={() => setViewMode('map')}
-                className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'map' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
-              >
-                <MapIcon size={16} />
-                ম্যাপ
-              </button>
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setFilters({...filters, type: ""})}
-                className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === "" ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
-              >
-                সব
-              </button>
-              {EVENT_TYPES.map(type => (
-                <button 
-                  key={type.id}
-                  onClick={() => setFilters({...filters, type: type.id})}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === type.id ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+            {/* Hero & Search */}
+            <section className="bg-emerald-900 text-white py-12 px-4 relative overflow-hidden">
+              <div className="absolute inset-0 opacity-10">
+                <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-emerald-400 via-transparent to-transparent"></div>
+              </div>
+              
+              <div className="max-w-4xl mx-auto relative z-10 text-center">
+                <motion.h2 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="text-3xl md:text-4xl font-bold mb-4"
                 >
-                  {type.label}
-                </button>
+                  আপনার এলাকায় ইফতার ও দ্বীনি মজলিসের খোঁজ নিন
+                </motion.h2>
+                <motion.p 
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.1 }}
+                  className="text-emerald-100/80 mb-8 max-w-2xl mx-auto"
+                >
+                  রমজানে ইফতার মাহফিল বা ইফতারি বিতরণের তথ্য এক জায়গায়। জেলা, ইউনিয়ন এবং গ্রাম ভিত্তিক সার্চ করুন।
+                </motion.p>
+
+                {/* Search Bar */}
+                <div className="bg-white p-2 rounded-2xl shadow-2xl flex flex-col md:flex-row gap-2">
+                  <div className="flex-1 flex items-center px-3 border-b md:border-b-0 md:border-r border-slate-100">
+                    <MapPin size={20} className="text-slate-400 mr-2" />
+                    <select 
+                      value={filters.district}
+                      onChange={(e) => setFilters({...filters, district: e.target.value})}
+                      className="w-full py-3 bg-transparent text-slate-700 focus:outline-none appearance-none cursor-pointer"
+                    >
+                      <option value="">জেলা নির্বাচন করুন</option>
+                      {DISTRICTS.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex-1 flex items-center px-3 border-b md:border-b-0 md:border-r border-slate-100">
+                    <Filter size={20} className="text-slate-400 mr-2" />
+                    <input 
+                      type="text"
+                      placeholder="উপজেলা/ইউনিয়ন"
+                      value={filters.upazila}
+                      onChange={(e) => setFilters({...filters, upazila: e.target.value})}
+                      className="w-full py-3 bg-transparent text-slate-700 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex-1 flex items-center px-3">
+                    <Search size={20} className="text-slate-400 mr-2" />
+                    <input 
+                      type="text"
+                      placeholder="গ্রাম/মহল্লা"
+                      value={filters.village}
+                      onChange={(e) => setFilters({...filters, village: e.target.value})}
+                      className="w-full py-3 bg-transparent text-slate-700 focus:outline-none"
+                    />
+                  </div>
+                  <button 
+                    onClick={fetchEvents}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-3 rounded-xl font-bold transition-all"
+                  >
+                    খুঁজুন
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            {/* Main Content */}
+            <main className="max-w-5xl mx-auto px-4 py-12">
+              <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+                <h3 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                  <Calendar className="text-emerald-600" />
+                  সাম্প্রতিক ইভেন্টসমূহ
+                </h3>
+                <div className="flex items-center gap-4">
+                  <div className="bg-white border border-slate-200 p-1 rounded-xl flex">
+                    <button 
+                      onClick={() => setViewMode('list')}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'list' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                    >
+                      <List size={16} />
+                      লিস্ট
+                    </button>
+                    <button 
+                      onClick={() => setViewMode('map')}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${viewMode === 'map' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                    >
+                      <MapIcon size={16} />
+                      ম্যাপ
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => setFilters({...filters, type: ""})}
+                      className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === "" ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+                    >
+                      সব
+                    </button>
+                    {EVENT_TYPES.map(type => (
+                      <button 
+                        key={type.id}
+                        onClick={() => setFilters({...filters, type: type.id})}
+                        className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${filters.type === type.id ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}
+                      >
+                        {type.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {loading ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {[1, 2, 3, 4].map(i => (
+                    <div key={i} className="h-64 bg-slate-100 rounded-3xl animate-pulse"></div>
+                  ))}
+                </div>
+              ) : viewMode === 'list' ? (
+                events.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {events.map((event) => {
+                      const typeInfo = EVENT_TYPES.find(t => t.id === event.type) || EVENT_TYPES[0];
+                      return (
+                        <motion.div 
+                          layout
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          key={event.id}
+                          className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all overflow-hidden group"
+                        >
+                          <div className="p-6">
+                            <div className="flex justify-between items-start mb-4">
+                              <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${typeInfo.bg} ${typeInfo.color}`}>
+                                {typeInfo.label}
+                              </span>
+                              <div className="text-slate-400 group-hover:text-emerald-600 transition-colors">
+                                <Info size={20} />
+                              </div>
+                            </div>
+                            
+                            <h4 className="text-xl font-bold mb-2 text-slate-900 group-hover:text-emerald-700 transition-colors">
+                              {event.name}
+                            </h4>
+                            
+                            <div className="space-y-2 mb-6">
+                              <div className="flex items-center gap-2 text-slate-500 text-sm">
+                                <MapPin size={16} className="text-emerald-500" />
+                                <span>{event.district} {event.upazila ? `> ${event.upazila}` : ''} {event.village ? `> ${event.village}` : ''}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-slate-500 text-sm">
+                                <Calendar size={16} className="text-emerald-500" />
+                                <span className="font-medium text-slate-700">
+                                  {event.event_date || event.date_range || 'তারিখ উল্লেখ নেই'}
+                                  {event.event_day ? ` (${event.event_day})` : ''}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-slate-500 text-sm">
+                                <Clock size={16} className="text-emerald-500" />
+                                <span>{event.start_time || 'আসরের পর'} থেকে ইফতার পর্যন্ত</span>
+                              </div>
+                              {event.contact && (
+                                <div className="flex items-center gap-2 text-slate-500 text-sm">
+                                  <Phone size={16} className="text-emerald-500" />
+                                  <span>{event.contact}</span>
+                                </div>
+                              )}
+                              {event.link_url && (
+                                <div className="flex items-center gap-2 text-slate-500 text-sm">
+                                  <ExternalLink size={16} className="text-emerald-500" />
+                                  <a href={event.link_url} target="_blank" rel="noopener noreferrer" className="text-emerald-600 hover:underline truncate max-w-[200px]">
+                                    বিস্তারিত লিংক
+                                  </a>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex gap-3">
+                              <a 
+                                href={event.lat && event.lng ? `https://www.google.com/maps/search/?api=1&query=${event.lat},${event.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${event.name} ${event.address} ${event.village}`)}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
+                              >
+                                <MapPin size={16} />
+                                লোকেশন দেখুন
+                              </a>
+                              {event.contact && (
+                                <a 
+                                  href={`tel:${event.contact}`}
+                                  className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
+                                >
+                                  <Phone size={16} />
+                                  কল দিন
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
+                    <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
+                      <Search size={32} />
+                    </div>
+                    <h4 className="text-xl font-bold text-slate-800 mb-2">কোনো ইভেন্ট পাওয়া যায়নি</h4>
+                    <p className="text-slate-500">আপনার এলাকায় কোনো ইভেন্ট থাকলে যুক্ত করুন।</p>
+                  </div>
+                )
+              ) : (
+                <div className="h-[600px] w-full bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden relative">
+                  <MapContainer center={[23.685, 90.3563]} zoom={7} style={{ height: '100%', width: '100%' }}>
+                    <TileLayer
+                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <MapView events={events} />
+                  </MapContainer>
+                </div>
+              )}
+            </main>
+          </motion.div>
+        )}
+
+        {currentPage === 'about' && (
+          <motion.div
+            key="about"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="max-w-4xl mx-auto px-4 py-16"
+          >
+            <div className="flex flex-col md:flex-row gap-12 items-center mb-20">
+              <div className="flex-1">
+                <h2 className="text-4xl font-black text-emerald-900 mb-6 leading-tight">🌐 IM Softworks</h2>
+                <div className="space-y-4 text-slate-600 leading-relaxed">
+                  <p className="font-medium text-lg text-emerald-800">
+                    IM Softworks একটি উদীয়মান সফটওয়্যার কোম্পানি, যা ভবিষ্যতমুখী প্রযুক্তি ও সৃজনশীল সমাধানের মাধ্যমে ক্লায়েন্টদের ব্যবসায়িক সাফল্যে সহায়তা করে।
+                  </p>
+                  <p>
+                    আমরা বিশ্বাস করি— আমাদের উন্নতি তখনই সম্ভব, যখন আমাদের ক্লায়েন্ট লাভবান হবেন। আমরা শুধু সফটওয়্যার তৈরি করি না — আমরা সম্ভাবনা গড়ে তুলি।
+                  </p>
+                  <p className="italic border-l-4 border-emerald-500 pl-4 py-2 bg-emerald-50">
+                    IM Softworks is an emerging software company that empowers clients’ business success through futuristic technology and innovative solutions. We believe that our growth is only possible when our clients benefit.
+                  </p>
+                </div>
+              </div>
+              <div className="w-full md:w-80 h-80 rounded-3xl overflow-hidden shadow-2xl rotate-3 hover:rotate-0 transition-transform duration-500">
+                <img 
+                  src="https://res.cloudinary.com/dlklqihg6/image/upload/v1760308052/kkchmpjdp9izcjfvvo4k.jpg" 
+                  alt="Mohammad Esa Ali" 
+                  className="w-full h-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-20">
+              <div className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm">
+                <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center mb-6">
+                  <Navigation size={24} />
+                </div>
+                <h3 className="text-xl font-bold mb-4">🎯 আমাদের লক্ষ্য (Our Mission)</h3>
+                <p className="text-emerald-700 font-bold mb-2">“আপনার লাভই আমাদের সফলতা।”</p>
+                <p className="text-slate-600 text-sm">
+                  আমরা প্রতিটি প্রজেক্টে বিশ্বাস করি— যদি ক্লায়েন্ট উপকৃত হন, তবেই আমরা সফল। সেই লক্ষ্যেই আমাদের প্রতিটি কোড, প্রতিটি ডিজাইন এবং প্রতিটি আইডিয়া।
+                </p>
+                <p className="text-slate-400 text-xs mt-4 italic">
+                  “Your profit is our success.” In every project, we believe that our true achievement lies in the client’s benefit.
+                </p>
+              </div>
+
+              <div className="bg-emerald-900 p-8 rounded-3xl text-white shadow-xl">
+                <div className="w-12 h-12 bg-emerald-800 text-emerald-400 rounded-xl flex items-center justify-center mb-6">
+                  <Info size={24} />
+                </div>
+                <h3 className="text-xl font-bold mb-4">👋 About Me</h3>
+                <p className="text-emerald-100 mb-4">
+                  Hello, I am <strong>Mohammad Esa Ali</strong>, a passionate and creative tech enthusiast.
+                </p>
+                <p className="text-emerald-100/70 text-sm leading-relaxed">
+                  I specialize in Software Development, Web Solutions, and Creative Design. My goal is to help businesses grow by building smart, future-ready, and user-friendly digital solutions.
+                </p>
+                <div className="mt-6 p-4 bg-emerald-800/50 rounded-xl border border-emerald-700">
+                  <p className="text-xs italic">“Success comes when your clients succeed.”</p>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {currentPage === 'products' && (
+          <motion.div
+            key="products"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="max-w-5xl mx-auto px-4 py-16"
+          >
+            <div className="text-center mb-16">
+              <h2 className="text-3xl font-bold text-slate-900 mb-4">🛠️ Products (Section)</h2>
+              <p className="text-slate-500 max-w-2xl mx-auto">
+                We develop smart, scalable, and future-ready software products tailored to meet the unique needs of modern businesses.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              {[
+                { title: "Automate processes", desc: "আমাদের প্রোডাক্ট আপনার ব্যবসার জটিল কাজগুলোকে সহজ ও স্বয়ংক্রিয় করবে।", icon: Navigation },
+                { title: "Improve efficiency", desc: "কাজের গতি এবং নির্ভুলতা বাড়িয়ে ব্যবসায়িক প্রবৃদ্ধি নিশ্চিত করে।", icon: Info },
+                { title: "Scale with confidence", desc: "ভবিষ্যতের কথা মাথায় রেখে তৈরি করা স্কেলেবল সল্যুশন।", icon: MapIcon }
+              ].map((product, i) => (
+                <div key={i} className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm hover:shadow-xl transition-all">
+                  <div className="w-14 h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center mb-6 shadow-lg shadow-emerald-100">
+                    <product.icon size={28} />
+                  </div>
+                  <h4 className="text-xl font-bold text-slate-900 mb-3">{product.title}</h4>
+                  <p className="text-slate-600 text-sm leading-relaxed">{product.desc}</p>
+                </div>
               ))}
             </div>
-          </div>
-        </div>
 
-        {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {[1, 2, 3, 4].map(i => (
-              <div key={i} className="h-64 bg-slate-100 rounded-3xl animate-pulse"></div>
-            ))}
-          </div>
-        ) : viewMode === 'list' ? (
-          events.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {events.map((event) => {
-                const typeInfo = EVENT_TYPES.find(t => t.id === event.type) || EVENT_TYPES[0];
-                return (
-                  <motion.div 
-                    layout
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    key={event.id}
-                    className="bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all overflow-hidden group"
-                  >
-                    <div className="p-6">
-                      <div className="flex justify-between items-start mb-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${typeInfo.bg} ${typeInfo.color}`}>
-                          {typeInfo.label}
-                        </span>
-                        <div className="text-slate-400 group-hover:text-emerald-600 transition-colors">
-                          <Info size={20} />
-                        </div>
-                      </div>
-                      
-                      <h4 className="text-xl font-bold mb-2 text-slate-900 group-hover:text-emerald-700 transition-colors">
-                        {event.name}
-                      </h4>
-                      
-                      <div className="space-y-2 mb-6">
-                        <div className="flex items-center gap-2 text-slate-500 text-sm">
-                          <MapPin size={16} className="text-emerald-500" />
-                          <span>{event.district} {event.upazila ? `> ${event.upazila}` : ''} {event.village ? `> ${event.village}` : ''}</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-slate-500 text-sm">
-                          <Clock size={16} className="text-emerald-500" />
-                          <span>{event.start_time || 'আসরের পর'} থেকে ইফতার পর্যন্ত</span>
-                        </div>
-                        {event.contact && (
-                          <div className="flex items-center gap-2 text-slate-500 text-sm">
-                            <Phone size={16} className="text-emerald-500" />
-                            <span>{event.contact}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex gap-3">
-                        <a 
-                          href={event.lat && event.lng ? `https://www.google.com/maps/search/?api=1&query=${event.lat},${event.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${event.name} ${event.address} ${event.village}`)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex-1 bg-slate-50 hover:bg-slate-100 text-slate-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
-                        >
-                          <MapPin size={16} />
-                          লোকেশন দেখুন
-                        </a>
-                        {event.contact && (
-                          <a 
-                            href={`tel:${event.contact}`}
-                            className="flex-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-3 rounded-xl text-center text-sm font-bold transition-all flex items-center justify-center gap-2"
-                          >
-                            <Phone size={16} />
-                            কল দিন
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
-              <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-300">
-                <Search size={32} />
+            <div className="mt-20 p-12 bg-emerald-900 rounded-[40px] text-white text-center relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-800 rounded-full -mr-32 -mt-32 opacity-50"></div>
+              <div className="relative z-10">
+                <h3 className="text-2xl font-bold mb-4">আপনার ব্যবসার জন্য সঠিক প্রোডাক্ট খুঁজছেন?</h3>
+                <p className="text-emerald-100/70 mb-8 max-w-xl mx-auto">আমাদের এক্সপার্ট টিমের সাথে কথা বলুন এবং আপনার প্রয়োজন অনুযায়ী কাস্টম সল্যুশন নিন।</p>
+                <button onClick={() => setCurrentPage('contact')} className="bg-white text-emerald-900 px-8 py-3 rounded-xl font-bold hover:bg-emerald-50 transition-all">যোগাযোগ করুন</button>
               </div>
-              <h4 className="text-xl font-bold text-slate-800 mb-2">কোনো ইভেন্ট পাওয়া যায়নি</h4>
-              <p className="text-slate-500">আপনার এলাকায় কোনো ইভেন্ট থাকলে যুক্ত করুন।</p>
             </div>
-          )
-        ) : (
-          <div className="h-[600px] w-full bg-white rounded-3xl border border-slate-100 shadow-xl overflow-hidden relative">
-            <MapContainer center={[23.685, 90.3563]} zoom={7} style={{ height: '100%', width: '100%' }}>
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              <MapView events={events} />
-            </MapContainer>
-          </div>
+          </motion.div>
         )}
-      </main>
+
+        {currentPage === 'services' && (
+          <motion.div
+            key="services"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="max-w-5xl mx-auto px-4 py-16"
+          >
+            <div className="text-center mb-16">
+              <h2 className="text-3xl font-bold text-slate-900 mb-4">🔧 আমাদের সার্ভিসসমূহ (Our Services)</h2>
+              <p className="text-slate-500">আমরা আধুনিক প্রযুক্তির মাধ্যমে আপনার ব্যবসাকে এগিয়ে নিতে সাহায্য করি।</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {[
+                { title: "কাস্টম সফটওয়্যার ডেভেলপমেন্ট", en: "Custom Software Development", icon: Utensils },
+                { title: "ওয়েব অ্যাপ্লিকেশন", en: "Web Applications", icon: MapIcon },
+                { title: "মোবাইল অ্যাপ", en: "Mobile Apps", icon: Phone },
+                { title: "ক্লাউড সল্যুশন", en: "Cloud Solutions", icon: Info },
+                { title: "API ডেভেলপমেন্ট", en: "API Development", icon: Navigation },
+                { title: "UI/UX ডিজাইন", en: "UI/UX Design", icon: Filter }
+              ].map((service, i) => (
+                <motion.div 
+                  key={i}
+                  whileHover={{ y: -5 }}
+                  className="bg-white p-8 rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl transition-all"
+                >
+                  <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center mb-6">
+                    <service.icon size={24} />
+                  </div>
+                  <h4 className="text-lg font-bold text-slate-900 mb-2">{service.title}</h4>
+                  <p className="text-slate-400 text-sm">{service.en}</p>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+
+        {currentPage === 'contact' && (
+          <motion.div
+            key="contact"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="max-w-2xl mx-auto px-4 py-16"
+          >
+            <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-2xl text-center">
+              <div className="w-20 h-20 bg-emerald-600 text-white rounded-3xl flex items-center justify-center mx-auto mb-8 shadow-xl shadow-emerald-200">
+                <Phone size={40} />
+              </div>
+              <h2 className="text-3xl font-bold text-slate-900 mb-4">Connect with us</h2>
+              <p className="text-slate-500 mb-10">আমাদের সাথে যোগাযোগ করতে নিচের ইমেইল ব্যবহার করুন।</p>
+              
+              <div className="p-6 bg-slate-50 rounded-3xl border border-slate-100 mb-8">
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Email Address</p>
+                <a href="mailto:im.softwark.team@gmail.com" className="text-xl font-bold text-emerald-600 hover:text-emerald-700 transition-colors">
+                  im.softwark.team@gmail.com
+                </a>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <button className="bg-emerald-600 text-white py-4 rounded-2xl font-bold hover:bg-emerald-700 transition-all">Message Us</button>
+                <button className="bg-slate-900 text-white py-4 rounded-2xl font-bold hover:bg-slate-800 transition-all">Schedule Call</button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Add Event Modal */}
       <AnimatePresence>
@@ -494,6 +744,31 @@ export default function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase">তারিখ *</label>
+                    <input 
+                      required
+                      type="text"
+                      placeholder="উদা: ১০ই রমজান"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                      value={formData.event_date}
+                      onChange={(e) => setFormData({...formData, event_date: e.target.value})}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-500 uppercase">বার *</label>
+                    <input 
+                      required
+                      type="text"
+                      placeholder="উদা: সোমবার"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                      value={formData.event_day}
+                      onChange={(e) => setFormData({...formData, event_day: e.target.value})}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
                     <label className="text-xs font-bold text-slate-500 uppercase">শুরুর সময়</label>
                     <input 
                       type="text"
@@ -551,6 +826,17 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-500 uppercase">বিস্তারিত লিংক (Facebook/Website)</label>
+                  <input 
+                    type="url"
+                    placeholder="https://facebook.com/events/..."
+                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+                    value={formData.link_url}
+                    onChange={(e) => setFormData({...formData, link_url: e.target.value})}
+                  />
+                </div>
+
+                <div className="space-y-1">
                   <label className="text-xs font-bold text-slate-500 uppercase">বিশেষত্ব/বিবরণ</label>
                   <textarea 
                     rows={3}
@@ -575,17 +861,49 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-100 py-12 px-4 mt-20">
-        <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white">
-              <Utensils size={18} />
+        <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-12">
+          <div className="col-span-1 md:col-span-2">
+            <div className="flex items-center gap-2 mb-6">
+              <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white">
+                <Utensils size={18} />
+              </div>
+              <span className="font-bold text-slate-800 text-xl">ইফতার সন্ধানে</span>
             </div>
-            <span className="font-bold text-slate-800">ইফতার সন্ধানে</span>
+            <p className="text-slate-500 text-sm mb-6 max-w-sm">
+              IM Softworks is an emerging software company focused on empowering businesses with futuristic technology and innovative solutions.
+            </p>
+            <div className="flex gap-4">
+              <a href="#" className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 transition-all border border-slate-100">
+                <Info size={18} />
+              </a>
+              <a href="#" className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 transition-all border border-slate-100">
+                <Phone size={18} />
+              </a>
+            </div>
           </div>
-          <p className="text-slate-500 text-sm">© ২০২৬ ইফতার সন্ধানে। আপনার এলাকার ইফতার মাহফিল খুঁজে নিন।</p>
-          <div className="flex gap-4">
-            <a href="#" className="text-slate-400 hover:text-emerald-600 transition-colors">ফেসবুক</a>
-            <a href="#" className="text-slate-400 hover:text-emerald-600 transition-colors">যোগাযোগ</a>
+
+          <div>
+            <h5 className="font-bold text-slate-900 mb-6 uppercase text-xs tracking-widest">Useful Links</h5>
+            <ul className="space-y-4">
+              <li><button onClick={() => setCurrentPage('iftar')} className="text-slate-500 hover:text-emerald-600 text-sm transition-colors">Home</button></li>
+              <li><button onClick={() => setCurrentPage('about')} className="text-slate-500 hover:text-emerald-600 text-sm transition-colors">About us</button></li>
+              <li><button onClick={() => setCurrentPage('products')} className="text-slate-500 hover:text-emerald-600 text-sm transition-colors">Products</button></li>
+              <li><button onClick={() => setCurrentPage('services')} className="text-slate-500 hover:text-emerald-600 text-sm transition-colors">Services</button></li>
+              <li><button onClick={() => setCurrentPage('contact')} className="text-slate-500 hover:text-emerald-600 text-sm transition-colors">Contact us</button></li>
+            </ul>
+          </div>
+
+          <div>
+            <h5 className="font-bold text-slate-900 mb-6 uppercase text-xs tracking-widest">Connect with us</h5>
+            <p className="text-slate-500 text-sm mb-4">im.softwark.team@gmail.com</p>
+            <button onClick={() => setCurrentPage('contact')} className="bg-emerald-600 text-white px-6 py-2 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all">Contact Us</button>
+          </div>
+        </div>
+        <div className="max-w-5xl mx-auto border-t border-slate-50 mt-12 pt-8 flex flex-col md:flex-row justify-between items-center gap-4">
+          <p className="text-slate-400 text-xs">Copyright © IM Softwark. All rights reserved.</p>
+          <div className="flex gap-6">
+            <a href="#" className="text-slate-400 hover:text-emerald-600 text-xs transition-colors">Legal</a>
+            <a href="#" className="text-slate-400 hover:text-emerald-600 text-xs transition-colors">Privacy Policy</a>
           </div>
         </div>
       </footer>
